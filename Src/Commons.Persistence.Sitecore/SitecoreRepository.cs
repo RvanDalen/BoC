@@ -20,8 +20,8 @@ namespace BoC.Persistence.SitecoreGlass
 
     public class SitecoreRepository<T> : IRepository<T> where T : class, IBaseEntity<Guid>, new()
     {
-        private readonly IDatabaseProvider _dbProvider;
-        private readonly ISitecoreServiceProvider _sitecoreServiceProvider;
+        protected IDatabaseProvider _dbProvider;
+        protected ISitecoreServiceProvider _sitecoreServiceProvider;
         private readonly IProviderSearchContextProvider _searchContextProvider;
         private readonly ILogger _logger;
         private ParentConfiguration _parentProperty;
@@ -42,32 +42,32 @@ namespace BoC.Persistence.SitecoreGlass
 
         }
 
-        protected virtual SitecoreInfoConfiguration PathProperty
+        protected SitecoreInfoConfiguration PathProperty
         {
             get { return _pathProperty ?? (_pathProperty = _sitecoreServiceProvider.GetSitecoreService().GlassContext[typeof(T)].Properties.OfType<SitecoreInfoConfiguration>().FirstOrDefault(p => p.Type == SitecoreInfoType.FullPath || p.Type == SitecoreInfoType.Path)); }
         }
 
-        protected virtual ParentConfiguration ParentProperty
+        protected ParentConfiguration ParentProperty
         {
             get { return _parentProperty ?? (_parentProperty = _sitecoreServiceProvider.GetSitecoreService().GlassContext[typeof(T)].Properties.OfType<ParentConfiguration>().FirstOrDefault()); }
         }
 
-        protected virtual SitecoreInfoConfiguration NameProperty
+        protected SitecoreInfoConfiguration NameProperty
         {
             get { return _nameProperty ?? (_nameProperty = _sitecoreServiceProvider.GetSitecoreService().GlassContext[typeof(T)].Properties.OfType<SitecoreInfoConfiguration>().FirstOrDefault(p => p.Type == SitecoreInfoType.Name)); }
         }
 
-        protected virtual SitecoreInfoConfiguration TemplateIdsProperty
+        protected SitecoreInfoConfiguration TemplateIdsProperty
         {
             get { return _templateIdsProperty ?? (_templateIdsProperty = _sitecoreServiceProvider.GetSitecoreService().GlassContext[typeof(T)].Properties.OfType<SitecoreInfoConfiguration>().FirstOrDefault(p => p.Type == SitecoreInfoType.BaseTemplateIds)); }
         }
 
-        protected virtual SitecoreInfoConfiguration LanguageProperty
+        protected SitecoreInfoConfiguration LanguageProperty
         {
             get { return _languageProperty ?? (_languageProperty = _sitecoreServiceProvider.GetSitecoreService().GlassContext[typeof(T)].Properties.OfType<SitecoreInfoConfiguration>().FirstOrDefault(p => p.Type == SitecoreInfoType.Language)); }
         }
 
-        protected virtual IBaseEntity<Guid> GetParent(T model)
+        private IBaseEntity<Guid> GetParent(T model)
         {
             if (model == null)
                 return null;
@@ -206,12 +206,12 @@ namespace BoC.Persistence.SitecoreGlass
             return Get(id, language);
         }
 
-        public virtual T Get(Guid id, Language language)
+        public T Get(Guid id, Language language)
         {
             return GetAndConvertItem<T>(id, language);
         }
 
-        protected virtual TargetClass GetAndConvertItem<TargetClass>(object id, Language language) where TargetClass: class
+        private TargetClass GetAndConvertItem<TargetClass>(object id, Language language) where TargetClass: class
         {
             ID itemid = id is ID ? (ID)id : (id is Guid ? new ID((Guid)id) : ID.Null);
             if (itemid == ID.Null && ID.IsID(id + ""))
@@ -234,7 +234,7 @@ namespace BoC.Persistence.SitecoreGlass
             }
         }
 
-        protected virtual TargetClass ConvertItem<TargetClass>(Item sitecoreItem) where TargetClass : class
+        private TargetClass ConvertItem<TargetClass>(Item sitecoreItem) where TargetClass : class
         {
             using (Profiler.StartContext("SitecoreRepository.ConvertItem for {0})", sitecoreItem != null ? sitecoreItem.ID : ID.Null))
             {
@@ -244,7 +244,7 @@ namespace BoC.Persistence.SitecoreGlass
             }
         }
 
-        public virtual Language GetLanguage(IDatabaseProvider dbProvider)
+        public Language GetLanguage(IDatabaseProvider dbProvider)
         {
             using (Profiler.StartContext("SitecoreRepository.GetLanguage"))
             {
@@ -263,7 +263,31 @@ namespace BoC.Persistence.SitecoreGlass
             }
         }
 
-        public virtual void Delete(T model)
+        public IEnumerable<T> GetItems(IEnumerable<ItemUri> itemUris)
+        {
+            if (itemUris == null)
+                yield break;
+            using (Profiler.StartContext("SitecoreRepository.GetItems for {0}", string.Join(", ", itemUris.Select(i => i.ToString()))))
+            {
+                var sitecoreService = _sitecoreServiceProvider.GetSitecoreService();
+                foreach (var itemUri in itemUris)
+                {
+                    var item = sitecoreService.Database.GetItem(itemUri.ItemID, itemUri.Language, itemUri.Version);
+                    if (item == null) yield return null;
+                    using (Profiler.StartContext("SitecoreRepository.GetItems -> createtype for {0}", item.ID))
+                    {
+                        yield return sitecoreService.Cast<T>(item, true, true);
+                    }
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            _sitecoreServiceProvider = null;
+        }
+
+        public void Delete(T model)
         {
             var language = GetLanguage(_dbProvider);
             _logger.Debug(String.Format("Deleting {0} (id: {1}, language: {2}, displayname: {3}", typeof (T), model.Id, language, model));
@@ -274,7 +298,30 @@ namespace BoC.Persistence.SitecoreGlass
             }
         }
 
-        public virtual IQueryable<T> Query()
+        #region IRepository implementation
+        T IRepository<T>.Get(object id)
+        {
+            if (id is Guid)
+                return this.Get((Guid) id);
+            if (ID.IsID(id + ""))
+                return this.Get(new ID(id + "").ToGuid());
+            
+            return this.Get(id + "");
+        }
+
+        void IRepository<T>.Delete(T target)
+        {
+            this.Delete(target);
+        }
+
+        void IRepository<T>.DeleteById(object id)
+        {
+            T item = ((IRepository<T>)this).Get(id);
+            if (item != null)
+                this.Delete(item);
+        }
+
+        IQueryable<T> IRepository<T>.Query()
         {
             using (Profiler.StartContext("SitecoreRepository.Query()"))
             {
@@ -282,10 +329,10 @@ namespace BoC.Persistence.SitecoreGlass
                     .GetQueryable<T>(new CultureExecutionContext(GetLanguage(_dbProvider).CultureInfo));
                 return AddStandardQueries(query);
             }
-
         }
 
-        protected virtual IQueryable<T> AddStandardQueries(IQueryable<T> query)
+
+        protected IQueryable<T> AddStandardQueries(IQueryable<T> query)
         {
             //try to query the _templates field
             if (TemplateIdsProperty != null && TemplateIdsProperty.PropertyInfo.PropertyType.IsConstructedGenericType &&
@@ -330,35 +377,6 @@ namespace BoC.Persistence.SitecoreGlass
             return query;
         }
 
-
-        #region IRepository implementation
-        T IRepository<T>.Get(object id)
-        {
-            if (id is Guid)
-                return this.Get((Guid) id);
-            if (ID.IsID(id + ""))
-                return this.Get(new ID(id + "").ToGuid());
-            
-            return this.Get(id + "");
-        }
-
-        void IRepository<T>.Delete(T target)
-        {
-            this.Delete(target);
-        }
-
-        void IRepository<T>.DeleteById(object id)
-        {
-            T item = ((IRepository<T>)this).Get(id);
-            if (item != null)
-                this.Delete(item);
-        }
-
-        IQueryable<T> IRepository<T>.Query()
-        {
-            return this.Query();
-        }
-
         T IRepository<T>.Save(T target)
         {
             target.Id = default(Guid);
@@ -377,24 +395,15 @@ namespace BoC.Persistence.SitecoreGlass
 
         void IRepository<T>.Evict(T target)
         {
-            if (target == null || _dbProvider == null)
-                return;
-            var db = this._dbProvider.GetDatabase();
-            if (db == null)
-                return;
-            var cache = CacheManager.GetItemCache(db);
-            if (cache == null)
-                return;
-            cache.RemoveItem(new ID(target.Id));
+            CacheManager.GetItemCache(this._dbProvider.GetDatabase()).RemoveItem(new ID(target.Id));
         }
 
         object IRepository.Get(object id)
         {
             if (id is Guid)
                 return this.Get((Guid)id);
-            ID scId;
-            if (ID.TryParse(id + "", out scId))
-                return this.Get(scId.ToGuid());
+            if (ID.IsID(id + ""))
+                return this.Get(new ID(id + "").ToGuid());
 
             return this.Get(id + "");
         }
@@ -426,20 +435,13 @@ namespace BoC.Persistence.SitecoreGlass
         void IRepository.Evict(object target)
         {
             var t = target as T;
-            if (t == null || _dbProvider == null)
-                return;
-            var db = this._dbProvider.GetDatabase();
-            if (db == null)
-                return;
-            var cache = CacheManager.GetItemCache(db);
-            if (cache == null)
-                return;
-            cache.RemoveItem(new ID(t.Id));
+            if (t != null)
+                CacheManager.GetItemCache(this._dbProvider.GetDatabase()).RemoveItem(new ID(t.Id));
         }
         #endregion
 
-
-
+        
+        
     }
 
 }
